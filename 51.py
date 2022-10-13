@@ -11,6 +11,15 @@ import utils
 FRAME_STACK = 4
 
 
+def caculate_similarity(x1 ,x2):
+    obs_dis = 1
+    reward_dis = 2
+    action_dis = 3
+    next_obs_dis = 4
+    similarity_metric = obs_dis + reward_dis + action_dis + next_obs_dis 
+    return similarity_metric
+
+
 ######################################################################
 # Replay Buffer
  
@@ -29,7 +38,8 @@ class ReplayBuffer(object):
         self.actions = np.empty((capacity, action_shape), dtype=np.int)
         self.rewards = np.empty((capacity, 1), dtype=np.float32)
         self.not_dones = np.empty((capacity, 1), dtype=np.float32)
-        self.transitions = np.empty((capacity, feature), dtype=np.float32)
+        self.features = np.empty((capacity, feature), dtype=np.float32)
+        self.next_features = np.empty((capacity, feature), dtype=np.float32)
 
         self.idx = 0
         self.last_save = 0
@@ -109,6 +119,23 @@ class ReplayBuffer(object):
             self.not_dones[start:end] = payload[4]
             self.idx = end
 
+    def similarity(self, number_choose):
+        assert number_choose <= self.idx
+        test_transition = []
+        test_transition.append[self.features[i]]
+        test_transition.append[self.rewards[i]]
+        test_transition.append[self.actions[i]]
+        test_transition.append[self.next_features[i]]
+
+        for i in range(self.idx):
+            cur_transition = []
+            cur_transition.append[self.features[i]]
+            cur_transition.append[self.rewards[i]]
+            cur_transition.append[self.actions[i]]
+            cur_transition.append[self.next_features[i]]
+            similarity_grade = caculate_similarity(test_transition, cur_transition)
+
+        return similarity_grade
 
 
 ######################################################################
@@ -170,10 +197,15 @@ def main():
     memory.load(path_dir)
     raw_trans = memory.obses[9999]    # shape: 1*84*84
 
+    # transform the obs to feature vectors
     for i in range(memory.idx):
         obs = torch.tensor(memory.obses[i])
         obs = obs.unsqueeze(0).to(memory.device)
-        memory.transitions[i] = policy_net.encoder(obs).squeeze(0).cpu().detach()
+        memory.features[i] = policy_net.encoder(obs).squeeze(0).cpu().detach()
+        next_obs = torch.tensor(memory.obses[i])
+        next_obs = next_obs.unsqueeze(0).to(memory.device)
+        memory.next_features[i] = policy_net.encoder(next_obs).squeeze(0).cpu().detach()
+
     print('memeory -100',memory.transitions[100])
     print('memeory -2000',memory.transitions[2000])
     print('memeory -20000',memory.transitions[20000])
