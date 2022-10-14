@@ -7,3 +7,6 @@ weights1/
 weights2/
 weights3/
 *.pt
+*.csv
+test.py
+img/

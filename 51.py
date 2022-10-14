@@ -6,16 +6,25 @@ import cv2
 import torch.nn as nn
 import torch.nn.functional as F
 import utils
-
+import csv
 # define super paraments
 FRAME_STACK = 4
 
 
-def caculate_similarity(x1 ,x2):
-    obs_dis = 1
-    reward_dis = 2
-    action_dis = 3
-    next_obs_dis = 4
+def calculate_similarity(vect_1 ,vect_2):
+
+    # 观测：余弦相似度 ，范围[-1~1]
+    obs_dis = torch.cosine_similarity(torch.tensor(vect_1[0]), torch.tensor(vect_2[0]), dim=0).numpy()
+    next_obs_dis = torch.cosine_similarity(torch.tensor(vect_1[3]), torch.tensor(vect_2[3]), dim=0).numpy()
+    # 奖励：L1 损失 
+    reward_dis = F.smooth_l1_loss(torch.tensor(vect_1[1]), torch.tensor(vect_2[1]), reduction='none').numpy()
+    # 离散动作：相同为1，不同为0
+    if vect_1[2] == vect_2[2]:
+        action_dis = 1
+    else:
+        action_dis = 0
+
+    # 计算相似度总分
     similarity_metric = obs_dis + reward_dis + action_dis + next_obs_dis 
     return similarity_metric
 
@@ -40,7 +49,7 @@ class ReplayBuffer(object):
         self.not_dones = np.empty((capacity, 1), dtype=np.float32)
         self.features = np.empty((capacity, feature), dtype=np.float32)
         self.next_features = np.empty((capacity, feature), dtype=np.float32)
-
+        self.sim_grade = np.empty((capacity, 1), dtype=np.float32)
         self.idx = 0
         self.last_save = 0
         self.full = False
@@ -94,12 +103,15 @@ class ReplayBuffer(object):
             return
         path = os.path.join(save_dir, '%d_%d.pt' % (self.last_save, self.idx))
         payload = [
-            self.obses[self.last_save:self.idx],
-            self.next_obses[self.last_save:self.idx],
+            # this buffer is too large to be saved ,be care of the mounts 
+            # self.obses[self.last_save:self.idx],
+            # self.next_obses[self.last_save:self.idx],
             self.actions[self.last_save:self.idx],
             self.rewards[self.last_save:self.idx],
             self.not_dones[self.last_save:self.idx],
-            self.transitions[self.last_save:self.idx]
+            self.features[self.last_save:self.idx],
+            self.next_features[self.last_save:self.idx],
+            self.sim_grade[self.last_save:self.idx]
         ]
         self.last_save = self.idx
         torch.save(payload, path)
@@ -122,18 +134,19 @@ class ReplayBuffer(object):
     def similarity(self, number_choose):
         assert number_choose <= self.idx
         test_transition = []
-        test_transition.append[self.features[i]]
-        test_transition.append[self.rewards[i]]
-        test_transition.append[self.actions[i]]
-        test_transition.append[self.next_features[i]]
-
+        test_transition.append(self.features[number_choose])
+        test_transition.append(self.rewards[number_choose])
+        test_transition.append(self.actions[number_choose])
+        test_transition.append(self.next_features[number_choose])
+        
         for i in range(self.idx):
             cur_transition = []
-            cur_transition.append[self.features[i]]
-            cur_transition.append[self.rewards[i]]
-            cur_transition.append[self.actions[i]]
-            cur_transition.append[self.next_features[i]]
-            similarity_grade = caculate_similarity(test_transition, cur_transition)
+            cur_transition.append(self.features[i])
+            cur_transition.append(self.rewards[i])
+            cur_transition.append(self.actions[i])
+            cur_transition.append(self.next_features[i])
+            similarity_grade = calculate_similarity(test_transition, cur_transition)
+            self.sim_grade[i] = similarity_grade
 
         return similarity_grade
 
@@ -171,10 +184,9 @@ class DQN(nn.Module):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
-        x = F.relu(self.l1(x.view(x.size(0), -1)))
+        x = F.relu(self.l1(x.view(x.size(0), -1)))  # output shape (512)
 
         return x
-
 
 
 def main():
@@ -195,7 +207,7 @@ def main():
 
     path_dir = "./buffer_4/"
     memory.load(path_dir)
-    raw_trans = memory.obses[9999]    # shape: 1*84*84
+
 
     # transform the obs to feature vectors
     for i in range(memory.idx):
@@ -206,20 +218,61 @@ def main():
         next_obs = next_obs.unsqueeze(0).to(memory.device)
         memory.next_features[i] = policy_net.encoder(next_obs).squeeze(0).cpu().detach()
 
-    print('memeory -100',memory.transitions[100])
-    print('memeory -2000',memory.transitions[2000])
-    print('memeory -20000',memory.transitions[20000])
-    # trans = torch.tensor(raw_trans)
-    # trans = trans.unsqueeze(0).to(device)
-    # output = policy_net.encoder(trans)
-    # print(output.size())
+    memory.similarity(200)
+    # memory.save_more('./buffer_more')
+    # sim_grade = memory.sim_grade.max()
+    # max_index = np.argmax(np.array(memory.sim_grade))
+    # print(memory.sim_grade[max_index])
+    # print(max_index)
 
-    # gray_obs = raw_trans.squeeze(0)     # shape 84*84  float
-    # cv2.imwrite("./buffer.jpeg",gray_obs*255)
-    # cv2.waitKey()
-    # 
+    # save the action
+
+    fo = open("action.csv", "w")
+    header = ["seq", "act"]
+    writer = csv.DictWriter(fo, header)
+    writer.writeheader()
+    action = memory.actions.tolist()
+    
+    for i in range(memory.idx):
+        sim = str(action[i]).replace("[","")
+        sim = sim.replace("]","")
+        writer.writerow({"seq": i+1, "act":sim})
+
+    # save the reward
+
+    fo = open("reward.csv", "w")
+    header = ["seq", "reward"]
+    writer = csv.DictWriter(fo, header)
+    writer.writeheader()
+    rew = memory.rewards.tolist()
+    for i in range(memory.idx):
+        sim = str(rew[i]).replace("[","")
+        sim = sim.replace("]","")
+        writer.writerow({"seq": i+1, "reward":sim})
+
+    # save the sim_grade
+
+    fo = open("sim.csv", "w")
+    header = ["seq", "sim_grade"]
+    writer = csv.DictWriter(fo, header)
+    writer.writeheader()
+    rew = memory.sim_grade.tolist()
+    for i in range(memory.idx):
+        sim = str(rew[i]).replace("[","")
+        sim = sim.replace("]","")
+        writer.writerow({"seq": i+1, "sim_grade":sim})
+
+    # save the image of the obs
+    '''
+        for i in range(memory.idx):
+            raw_trans = memory.obses[i]    # shape: 4*84*84
+            for j in range(4):
+                gray_obs = raw_trans[j]
+                path_img = "./img/" + str(i+1) + "_" +str(j)+ ".jpg"
+                cv2.imwrite(path_img,gray_obs*255)
+    '''
+
     print("LT SB")
-
 
 
 if __name__ == '__main__':
